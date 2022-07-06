@@ -1,8 +1,8 @@
 #pragma once
 #include <vector>
 #include <type_traits>
-
-
+#include <algorithm>
+#include <functional>
 
 #define UNUSED(x) (void)(x)
 using node_id_t = int;
@@ -203,8 +203,15 @@ public:
         _post_find(p,x);
         return x;
     }
+    node_id_t lower_bound(key_t const& key) {
+        //todo
+    }
+    node_id_t upper_bound(key_t const& key) {
+        //todo
+    }
     bool has(key_t const& key) { return find(key) != null_id; }
     size_t size() const { return _size; }
+
     template<typename T = mapped_t, typename = std::enable_if_t<!std::is_same<T,null_t>::value>>
     mapped_t& operator[](key_t const& key) {
         node_id_t id = find(key);
@@ -297,7 +304,7 @@ protected:
 
 template<typename Key, typename Mapped>
 struct avl_data {
-    int height;
+    int height = 0; // value for if node id == null_id
     void init(Key const& key, Mapped const& val) {
         height = 1; (void)key, (void)val;
     }
@@ -310,11 +317,12 @@ template<typename Key,
          typename Mapped = null_t,
          typename CmpFn = std::less<Key>>
 class avltree : public update_policy<Key, Mapped, CmpFn, avl_data<Key, Mapped>> {
-    using base = update_policy<Key, Mapped, CmpFn, avl_data<Key, Mapped>>;
 protected:
+    using base = update_policy<Key, Mapped, CmpFn, avl_data<Key, Mapped>>;
 #define N(x) base::_nodes[x]
-    int _get_height(node_id_t x) {
-        return x == base::null_id ? 0 : N(x).balance_data.height;
+    int _get_height(node_id_t x) __attribute__((always_inline)) {
+    // no need to check for null_id because N(null_id)'s height is 0
+        return N(x).balance_data.height;
     }
     bool _is_balanced(node_id_t x) {
         return std::abs(_get_height(N(x).sons[0])-_get_height(N(x).sons[1])) <= 1;
@@ -352,21 +360,25 @@ protected:
 template<typename Key, typename Mapped>
 struct rb_data {
     enum color_t : bool { B=0,R=1 };
-    color_t color;
-    void init(Key const& key, Mapped const& val) { color = B; (void)key,(void)val; }
+    color_t color = color_t::B; // value for color if node_id == null_id
+    void init(Key const& key, Mapped const& val) { (void)key,(void)val; }
     void combine(rb_data const* lhs, rb_data const* rhs) { (void)lhs,(void)rhs; }
 };
 template<typename Key, 
          typename Mapped = null_t,
          typename CmpFn = std::less<Key>>
 class rbtree : public update_policy<Key, Mapped, CmpFn, rb_data<Key, Mapped>> {
+protected:
     using base = update_policy<Key, Mapped, CmpFn, rb_data<Key, Mapped>>;
     using color_t = typename rb_data<Key, Mapped>::color_t;
     using key_t = typename base::key_t;
     using mapped_t = typename base::mapped_t;
 #define N(x) base::_nodes[x]
     void _flip_color(node_id_t x) { N(x).balance_data.color = (color_t)!(bool)N(x).balance_data.color; }
-    color_t _get_color(node_id_t x) { return x == base::null_id ? color_t::B : N(x).balance_data.color; }
+    color_t _get_color(node_id_t x) __attribute__((always_inline)) {
+    // no need to check for null_id because N(null_id)'s color is black
+        return N(x).balance_data.color;
+    }
     void _set_color(node_id_t x, color_t c) { N(x).balance_data.color = c; }
     bool _is_two_node(node_id_t x) {
         return _get_color(x) == color_t::B && _get_color(N(x).sons[0]) == color_t::B && _get_color(N(x).sons[1]) == color_t::B;
@@ -377,6 +389,7 @@ class rbtree : public update_policy<Key, Mapped, CmpFn, rb_data<Key, Mapped>> {
     bool _is_four_node(node_id_t x) {
         return _get_color(x) == color_t::B && _get_color(N(x).sons[0]) == color_t::R && _get_color(N(x).sons[1]) == color_t::R;
     }
+    // make x,p,g a four-node
     int _fix_four_node(node_id_t x) {
         int p = N(x).p, g = N(p).p;
         int r;
@@ -394,7 +407,7 @@ public:
     /* since I implement top-down insert/erase, rbtree needs to override insert and erase directly */
     virtual node_id_t insert(key_t const& key, mapped_t const& value = null_t()) override {
         node_id_t x = this->root(), p = base::null_id;
-        bool dir;
+        bool dir = false;
         while(x != base::null_id) {
             dir = this->_cmp(N(x).key, key);
             if(this->_cmp(key, N(x).key) || dir) {
@@ -408,60 +421,58 @@ public:
             }
             p = x, x = N(x).sons[dir];
         }
-        
         x = base::_new_node(key, value), _set_color(x, color_t::R);
         base::_relink(p, dir, x);
-        
         if(_get_color(p) == color_t::R)
             _fix_four_node(x);
-        
-        ++ this->_size;
         _set_color(this->root(), color_t::B);
+        ++ this->_size;
         base::_post_insert(p,x);
         return x;
     }
     virtual void erase(key_t const& key) override {
-        node_id_t x,f;
-        bool dir = false;
-
+        node_id_t x, p = base::null_id, f = base::null_id, sibling = base::null_id;
         x = N(this->root()).p; // N(null_id).sons[0] is the root
+        
+        bool dir = false;
         while(N(x).sons[dir] != base::null_id) {
+            p = x;
+            sibling = N(x).sons[!dir];
             x = N(x).sons[dir];
+            
             dir = this->_cmp(N(x).key, key);
             if(!this->_cmp(key, N(x).key) && !dir)
                 f = x;
+
             if(_is_two_node(x)) {
-                if(x == this->root())
-                    continue;
-                node_id_t p = N(x).p;
-                node_id_t sibling = N(p).sons[N(p).sons[0] == x];
-                if(sibling == base::null_id)
-                    continue;
-                
-                if(_is_two_node(sibling)) {
-                    _set_color(x, color_t::R), _set_color(sibling, color_t::R), _set_color(p, color_t::B);
-                } else {
-                    node_id_t red_child = N(sibling).sons[_get_color(N(sibling).sons[1]) == color_t::R];
-                    node_id_t g = _fix_four_node(red_child);
-                    _set_color(g, color_t::R), _set_color(N(g).sons[0], color_t::B),
-                    _set_color(N(g).sons[1], color_t::B), _set_color(x, color_t::R);
+                if(sibling != base::null_id) {
+                    if(_is_two_node(sibling)) {
+                        _set_color(x, color_t::R), _set_color(sibling, color_t::R), _set_color(p, color_t::B);
+                    } else {
+                        node_id_t red_child = N(sibling).sons[_get_color(N(sibling).sons[1]) == color_t::R];
+                        node_id_t g = _fix_four_node(red_child);
+                        _set_color(g, color_t::R), _set_color(N(g).sons[0], color_t::B),
+                        _set_color(N(g).sons[1], color_t::B), _set_color(x, color_t::R);
+                    }
                 }
             } else if(_is_three_node(x) && _get_color(N(x).sons[dir]) == color_t::B) {
-                node_id_t sibling = N(x).sons[!dir];
-                this->_rotate(sibling);
-                _set_color(sibling, color_t::B), _set_color(x, color_t::R);
+                node_id_t red_child = N(x).sons[!dir];
+                this->_rotate(red_child);
+                _set_color(red_child, color_t::B), _set_color(x, color_t::R);
+                p = N(x).p;
             }
         }
-
-        node_id_t p;
+        _set_color(this->root(), color_t::B);
+        
         if(f != base::null_id) {
-            p = N(x).p;
-            if(f != x)
+            if(f != x) {
                 base::_swap_data(f,x);
+                // swap color back, overriding default behavior
+                std::swap(N(f).balance_data.color, N(x).balance_data.color);
+            }
             base::_relink(p, N(p).sons[1]==x, N(x).sons[N(x).sons[1] != base::null_id]);
             base::_recycle(x);
             -- this->_size;
-            _set_color(this->root(), color_t::B);
         } else {
             p = base::null_id, x = base::null_id;
         }
@@ -469,4 +480,3 @@ public:
     }
 #undef N
 };
-
